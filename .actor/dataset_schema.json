@@ -13,11 +13,7 @@
           "job_type",
           "industry",
           "working_hours",
-          "job_requirements",
-          "japanese_level",
           "chinese_level",
-          "holidays",
-          "job_contract_period",
           "company_info",
           "date_posted",
           "description_html",
@@ -46,6 +42,10 @@
           },
           "job_type": {
             "label": "Job Type",
+            "format": "text"
+          },
+          "industry": {
+            "label": "Industry",
             "format": "text"
           },
           "date_posted": {

@@ -220,20 +220,8 @@ async function main() {
                         const workingHoursRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'working hours');
                         data.working_hours = workingHoursRow.length ? workingHoursRow.find('td').last().text().trim() : null;
 
-                        const jobRequirementsRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'job requirements');
-                        data.job_requirements = jobRequirementsRow.length ? jobRequirementsRow.find('td').last().html().trim() : null;
-
-                        const japaneseLevelRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'japanese level');
-                        data.japanese_level = japaneseLevelRow.length ? japaneseLevelRow.find('td').last().text().trim() : null;
-
                         const chineseLevelRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'chinese level');
                         data.chinese_level = chineseLevelRow.length ? chineseLevelRow.find('td').last().text().trim() : null;
-
-                        const holidaysRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'holidays');
-                        data.holidays = holidaysRow.length ? holidaysRow.find('td').last().text().trim() : null;
-
-                        const jobContractRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'job contract period');
-                        data.job_contract_period = jobContractRow.length ? jobContractRow.find('td').last().text().trim() : null;
 
                         const companyInfoRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'company info');
                         data.company_info = companyInfoRow.length ? companyInfoRow.find('td').last().html().trim() : null;
@@ -250,17 +238,12 @@ async function main() {
                         const item = {
                             title: data.title || null,
                             company: data.company || null,
-                            category: category || null,
                             location: data.location || null,
                             salary: data.salary || null,
                             job_type: data.job_type || null,
                             industry: data.industry || null,
                             working_hours: data.working_hours || null,
-                            job_requirements: data.job_requirements ? cleanText(data.job_requirements) : null,
-                            japanese_level: data.japanese_level || null,
                             chinese_level: data.chinese_level || null,
-                            holidays: data.holidays || null,
-                            job_contract_period: data.job_contract_period || null,
                             company_info: data.company_info ? cleanText(data.company_info) : null,
                             date_posted: data.date_posted || null,
                             description_html: data.description_html || null,

@@ -4,11 +4,11 @@
 [![Daijob Jobs](https://img.shields.io/badge/Jobs-Daijob.com-orange)](https://www.daijob.com/en/)
 [![Japan Jobs](https://img.shields.io/badge/Location-Japan-green)](https://www.daijob.com/en/)
 
-A powerful web scraper for extracting job listings from Daijob.com, Japan's leading job site for bilingual professionals and foreigners seeking work in Japan. This actor efficiently collects job data including titles, companies, locations, salaries, and detailed descriptions.
+A powerful web scraper for extracting job listings from Daijob.com, Japan's leading job site for bilingual professionals and foreigners seeking work in Japan. This actor efficiently collects job data including titles, companies, locations, salaries, job types, industry, and detailed descriptions.
 
 ## 🚀 Key Features
 
-- **Comprehensive Job Data**: Extracts detailed job information including titles, companies, locations, salaries, and full job descriptions
+- **Comprehensive Job Data**: Extracts detailed job information including titles, companies, locations, salaries, job types, industry, and full job descriptions
 - **Flexible Search Options**: Search by keywords, locations, or specific URLs
 - **Pagination Support**: Automatically handles multiple result pages
 - **Detail Extraction**: Optional deep scraping for complete job descriptions
@@ -22,8 +22,13 @@ A powerful web scraper for extracting job listings from Daijob.com, Japan's lead
 - Company names and information
 - Job locations (cities in Japan)
 - Salary ranges
-- Job descriptions (HTML and plain text)
+- Job types
+- Industry
+- Working hours
+- Chinese language level requirements
+- Company information
 - Posting dates
+- Job descriptions (HTML and plain text)
 - Direct job URLs
 
 ## 🔧 Input Parameters
@@ -53,11 +58,7 @@ Each scraped job is saved as a JSON object with the following structure:
   "job_type": "IT/Engineering - Software Development",
   "industry": "Information Technology",
   "working_hours": "9:00 AM - 6:00 PM",
-  "job_requirements": "Requirements text...",
-  "japanese_level": "Business Level",
   "chinese_level": "Business Conversation Level",
-  "holidays": "Full 2-day weekend, Paid annual leave",
-  "job_contract_period": "Full-time employee",
   "company_info": "Company information...",
   "date_posted": "2025-11-13",
   "description_html": "<p>Detailed job description...</p>",
