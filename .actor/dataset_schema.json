@@ -11,7 +11,17 @@
           "location",
           "salary",
           "job_type",
+          "industry",
+          "working_hours",
+          "job_requirements",
+          "japanese_level",
+          "chinese_level",
+          "holidays",
+          "job_contract_period",
+          "company_info",
           "date_posted",
+          "description_html",
+          "description_text",
           "url"
         ]
       },

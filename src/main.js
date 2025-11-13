@@ -102,8 +102,7 @@ async function main() {
             return [...links];
         }
 
-        function findNextPage($, base) {
-            const currentPage = request.userData?.pageNo || 1;
+        function findNextPage($, base, currentPage) {
             const nextLink = $('a').filter((_, el) => {
                 const text = $(el).text().trim();
                 return text === (currentPage + 1).toString();
@@ -164,7 +163,7 @@ async function main() {
                         }
 
                         if (saved < RESULTS_WANTED && pageNo < MAX_PAGES) {
-                            const next = findNextPage($, request.url);
+                            const next = findNextPage($, request.url, pageNo);
                             if (next) {
                                 await enqueueLinks({ urls: [next], userData: { label: 'LIST', pageNo: pageNo + 1 } });
                                 crawlerLog.info(`Enqueued next page: ${next}`);
@@ -185,28 +184,68 @@ async function main() {
                         return;
                     }
                     try {
+                        // Validate if this is a job detail page
+                        if (!$('h4').length || !$('table').length) {
+                            crawlerLog.warn(`Page ${request.url} does not appear to be a valid job detail page (missing h4 or table)`);
+                            return;
+                        }
+
                         const json = extractFromJsonLd($);
                         const data = json || {};
                         if (!data.title) data.title = $('h4').first().text().trim() || null;
                         if (!data.company) {
-                            const companyRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim() === 'Company Name');
+                            const companyRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'company name');
                             data.company = companyRow.length ? companyRow.find('td').last().text().trim() : null;
                         }
                         if (!data.description_html) {
-                            const descRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim() === 'Job Description');
+                            const descRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'job description');
                             data.description_html = descRow.length ? String(descRow.find('td').last().html()).trim() : null;
                         }
                         data.description_text = data.description_html ? cleanText(data.description_html) : null;
                         if (!data.location) {
-                            const locRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim() === 'Location');
+                            const locRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'location');
                             data.location = locRow.length ? locRow.find('td').last().text().trim() : null;
                         }
                         if (!data.salary) {
-                            const salaryRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim() === 'Salary');
+                            const salaryRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'salary');
                             data.salary = salaryRow.length ? salaryRow.find('td').last().text().trim() : null;
                         }
+                        // Extract additional fields with case-insensitive matching
+                        const jobTypeRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'job type');
+                        data.job_type = jobTypeRow.length ? jobTypeRow.find('td').last().text().trim() : null;
+
+                        const industryRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'industry');
+                        data.industry = industryRow.length ? industryRow.find('td').last().text().trim() : null;
+
+                        const workingHoursRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'working hours');
+                        data.working_hours = workingHoursRow.length ? workingHoursRow.find('td').last().text().trim() : null;
+
+                        const jobRequirementsRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'job requirements');
+                        data.job_requirements = jobRequirementsRow.length ? jobRequirementsRow.find('td').last().html().trim() : null;
+
+                        const japaneseLevelRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'japanese level');
+                        data.japanese_level = japaneseLevelRow.length ? japaneseLevelRow.find('td').last().text().trim() : null;
+
+                        const chineseLevelRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'chinese level');
+                        data.chinese_level = chineseLevelRow.length ? chineseLevelRow.find('td').last().text().trim() : null;
+
+                        const holidaysRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'holidays');
+                        data.holidays = holidaysRow.length ? holidaysRow.find('td').last().text().trim() : null;
+
+                        const jobContractRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'job contract period');
+                        data.job_contract_period = jobContractRow.length ? jobContractRow.find('td').last().text().trim() : null;
+
+                        const companyInfoRow = $('table tr').filter((_, tr) => $(tr).find('td').first().text().trim().toLowerCase() === 'company info');
+                        data.company_info = companyInfoRow.length ? companyInfoRow.find('td').last().html().trim() : null;
+
                         // Date posted not available on page
                         data.date_posted = data.date_posted || null;
+
+                        // Validate that we have at least title and company
+                        if (!data.title || !data.company) {
+                            crawlerLog.warn(`Incomplete job data on ${request.url}: title=${!!data.title}, company=${!!data.company}`);
+                            return;
+                        }
 
                         const item = {
                             title: data.title || null,
@@ -214,6 +253,15 @@ async function main() {
                             category: category || null,
                             location: data.location || null,
                             salary: data.salary || null,
+                            job_type: data.job_type || null,
+                            industry: data.industry || null,
+                            working_hours: data.working_hours || null,
+                            job_requirements: data.job_requirements ? cleanText(data.job_requirements) : null,
+                            japanese_level: data.japanese_level || null,
+                            chinese_level: data.chinese_level || null,
+                            holidays: data.holidays || null,
+                            job_contract_period: data.job_contract_period || null,
+                            company_info: data.company_info ? cleanText(data.company_info) : null,
                             date_posted: data.date_posted || null,
                             description_html: data.description_html || null,
                             description_text: data.description_text || null,
