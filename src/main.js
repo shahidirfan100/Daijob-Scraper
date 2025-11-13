@@ -1,6 +1,4 @@
 // Daijob scraper - CheerioCrawler implementation (fixed & extended)
-// Fetches job list pages OR single job detail pages and extracts rich fields.
-
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
@@ -26,8 +24,12 @@ async function main() {
             dedupe = true,
         } = input;
 
-        const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? +RESULTS_WANTED_RAW : 100;
-        const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? +MAX_PAGES_RAW : 999;
+        const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW)
+            ? Math.max(1, +RESULTS_WANTED_RAW)
+            : Number.MAX_SAFE_INTEGER;
+        const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW)
+            ? Math.max(1, +MAX_PAGES_RAW)
+            : 999;
 
         log.info('Starting Daijob scraper with input:', {
             keyword,
@@ -39,8 +41,58 @@ async function main() {
             dedupe,
         });
 
-        const proxyConf = await Actor.createProxyConfiguration(proxyConfiguration || {});
+        // Helpers
+        const toAbs = (href, base = 'https://www.daijob.com/en/') => {
+            try {
+                return new URL(href, base).href;
+            } catch {
+                return null;
+            }
+        };
 
+        const cleanText = (html) => {
+            if (!html) return null;
+            const $ = cheerioLoad(`<div>${html}</div>`);
+            $('script, style, noscript, iframe').remove();
+            const txt = $.root().text().replace(/\s+/g, ' ').trim();
+            return txt || null;
+        };
+
+        const buildStartUrl = (kw, loc, cat) => {
+            const u = new URL('https://www.daijob.com/en/jobs/search_result');
+            if (kw) u.searchParams.set('keyword', String(kw).trim());
+            if (loc) u.searchParams.set('location', String(loc).trim());
+            // category support is unclear, so we leave it out
+            u.searchParams.set('page', '1');
+            return u.href;
+        };
+
+        const isDetailUrl = (u) => {
+            try {
+                const urlObj = new URL(u);
+                return /\/en\/jobs\/detail\/\d+/i.test(urlObj.pathname);
+            } catch {
+                return /\/en\/jobs\/detail\/\d+/i.test(u);
+            }
+        };
+
+        // Build initial URLs
+        const initial = [];
+        if (Array.isArray(startUrls) && startUrls.length) initial.push(...startUrls);
+        if (startUrl) initial.push(startUrl);
+        if (url) initial.push(url);
+        if (!initial.length) initial.push(buildStartUrl(keyword, location, category));
+
+        log.info(`Built ${initial.length} initial URLs to scrape`);
+
+        const proxyConf = proxyConfiguration
+            ? await Actor.createProxyConfiguration({ ...proxyConfiguration })
+            : undefined;
+
+        let saved = 0;
+        const seenUrls = new Set();
+
+        // Header generator for stealth
         const headerGenerator = new HeaderGenerator({
             browsers: [
                 { name: 'chrome', minVersion: 120 },
@@ -51,27 +103,7 @@ async function main() {
             operatingSystems: ['windows', 'macos', 'linux'],
         });
 
-        let saved = 0;
-        const seenUrls = new Set();
-
-        function isDetailUrl(u) {
-            try {
-                const urlObj = new URL(u);
-                return /\/en\/jobs\/detail\/\d+/i.test(urlObj.pathname);
-            } catch {
-                return /\/en\/jobs\/detail\/\d+/i.test(u);
-            }
-        }
-
-        function toAbs(href, base) {
-            try {
-                return new URL(href, base).href;
-            } catch {
-                return null;
-            }
-        }
-
-        // --- JSON-LD extraction (JobPosting) -----------------
+        // --- JSON-LD extraction (extended) -----------------
         function extractFromJsonLd($) {
             const scripts = $('script[type="application/ld+json"]');
             for (let i = 0; i < scripts.length; i++) {
@@ -80,13 +112,12 @@ async function main() {
                     if (!raw.trim()) continue;
                     const parsed = JSON.parse(raw);
                     const arr = Array.isArray(parsed) ? parsed : [parsed];
-
                     for (const e of arr) {
                         if (!e) continue;
                         const t = e['@type'] || e.type;
                         if (t === 'JobPosting' || (Array.isArray(t) && t.includes('JobPosting'))) {
                             const hiringOrg = e.hiringOrganization || {};
-                            const jobLoc = e.jobLocation || e.jobLocationType;
+                            const jobLoc = e.jobLocation;
                             let location = null;
 
                             if (jobLoc && jobLoc.address) {
@@ -102,7 +133,6 @@ async function main() {
                                 if (parts.length) location = parts.join(' > ');
                             }
 
-                            // salary may be in baseSalary or salary fields
                             let salary = null;
                             if (e.baseSalary) {
                                 const bs = e.baseSalary;
@@ -127,7 +157,8 @@ async function main() {
                             const employmentType = e.employmentType || null;
                             const industry = e.industry || null;
                             const orgDescription =
-                                (hiringOrg && (hiringOrg.description || hiringOrg.disambiguatingDescription)) ||
+                                (hiringOrg &&
+                                    (hiringOrg.description || hiringOrg.disambiguatingDescription)) ||
                                 null;
 
                             return {
@@ -135,8 +166,8 @@ async function main() {
                                 company: hiringOrg.name || null,
                                 date_posted: e.datePosted || null,
                                 description_html: e.description || null,
-                                location: location,
-                                salary: salary,
+                                location,
+                                salary,
                                 job_type: employmentType || null,
                                 industry: industry || null,
                                 company_info_html: orgDescription || null,
@@ -144,27 +175,26 @@ async function main() {
                         }
                     }
                 } catch {
-                    // ignore JSON-LD parse errors and keep going
+                    // ignore parse errors
                 }
             }
             return null;
         }
 
-        function cleanText(htmlOrText) {
-            if (!htmlOrText) return null;
-            const $ = cheerioLoad(`<div>${htmlOrText}</div>`);
-            const text = $.root().text();
-            return text.replace(/\s+/g, ' ').trim() || null;
-        }
-
-        // --- New-layout helpers for labelled sections (Industry, Location, etc.) ----
+        // --- New-layout helpers for labelled sections ---
         function findLabelNode($, label) {
             const labelLc = label.toLowerCase();
             let found = null;
-
             $('body *').each((_, el) => {
                 if (found) return;
-                const text = $(el).clone().children().remove().end().text().trim().toLowerCase();
+                const text = $(el)
+                    .clone()
+                    .children()
+                    .remove()
+                    .end()
+                    .text()
+                    .trim()
+                    .toLowerCase();
                 if (!text) return;
                 if (text === labelLc || text.startsWith(labelLc)) {
                     found = $(el);
@@ -178,8 +208,7 @@ async function main() {
             if (!node) return null;
             const link = node.find('a').first();
             if (link.length) return link.text().trim() || null;
-            const text = node.text().replace(/^Industry/i, '').trim();
-            return text || null;
+            return node.text().replace(/^Industry/i, '').trim() || null;
         }
 
         function extractJobTypeFromLayout($) {
@@ -189,8 +218,7 @@ async function main() {
             if (link.length) return link.text().trim() || null;
             const next = node.nextAll().filter((_, el) => $(el).text().trim()).first();
             if (next.length) return next.text().trim() || null;
-            const text = node.text().replace(/^Job Type/i, '').trim();
-            return text || null;
+            return node.text().replace(/^Job Type/i, '').trim() || null;
         }
 
         function extractLocationFromLayout($) {
@@ -204,14 +232,12 @@ async function main() {
                     .filter(Boolean);
                 if (parts.length) return parts.join(' > ');
             }
-            const text = node.text().replace(/^Location/i, '').trim();
-            return text || null;
+            return node.text().replace(/^Location/i, '').trim() || null;
         }
 
         function extractSalaryFromLayout($) {
             const node = findLabelNode($, 'Salary');
             if (!node) return null;
-            // Include the label node and perhaps its following sibling which has additional details
             let text = node.text().replace(/^Salary/i, '').trim();
             const next = node.next();
             if (next && next.length) {
@@ -248,7 +274,6 @@ async function main() {
             const node = findLabelNode($, 'Company Info');
             if (!node) return null;
 
-            // Take text from the Company Info label node onwards until we hit the next "big" label.
             const stopMarkers = [
                 'working hours',
                 'job requirements',
@@ -260,9 +285,6 @@ async function main() {
             ];
 
             let html = '';
-            let cur = node;
-
-            // Include text *after* the "Company Info" label itself
             const firstText = node
                 .clone()
                 .children()
@@ -271,10 +293,9 @@ async function main() {
                 .text()
                 .replace(/^Company Info/i, '')
                 .trim();
-            if (firstText) {
-                html += `<p>${firstText}</p>`;
-            }
+            if (firstText) html += `<p>${firstText}</p>`;
 
+            let cur = node;
             while (true) {
                 cur = cur.next();
                 if (!cur || !cur.length) break;
@@ -283,7 +304,6 @@ async function main() {
                 if (stopMarkers.some((m) => txtLc.startsWith(m))) break;
                 html += $.html(cur);
             }
-
             return html || null;
         }
 
@@ -303,8 +323,6 @@ async function main() {
             ];
 
             let html = '';
-
-            // Text right after "Job Description" on same line
             const firstText = node
                 .clone()
                 .children()
@@ -313,9 +331,7 @@ async function main() {
                 .text()
                 .replace(/^Job Description/i, '')
                 .trim();
-            if (firstText) {
-                html += `<p>${firstText}</p>`;
-            }
+            if (firstText) html += `<p>${firstText}</p>`;
 
             let cur = node;
             while (true) {
@@ -326,10 +342,10 @@ async function main() {
                 if (stopMarkers.some((m) => txtLc.startsWith(m))) break;
                 html += $.html(cur);
             }
-
             return html || null;
         }
 
+        // --- list page helpers ---
         function findJobLinks($, base) {
             const links = new Set();
             $('a[href]').each((_, a) => {
@@ -344,13 +360,16 @@ async function main() {
         }
 
         function findNextPage($, base, currentPage) {
-            // Try a "Next" link first
-            let nextHref = $('a').filter((_, el) => $(el).text().trim().toLowerCase() === 'next').first().attr('href');
+            // Try a "Next" text link first
+            let nextHref = $('a')
+                .filter((_, el) => $(el).text().trim().toLowerCase() === 'next')
+                .first()
+                .attr('href');
+
             if (!nextHref && Number.isFinite(currentPage)) {
-                // Try numbered pagination: look for the link with text == currentPage + 1
-                const targetText = (currentPage + 1).toString();
+                const target = (currentPage + 1).toString();
                 nextHref = $('a')
-                    .filter((_, el) => $(el).text().trim() === targetText)
+                    .filter((_, el) => $(el).text().trim() === target)
                     .first()
                     .attr('href');
             }
@@ -362,7 +381,7 @@ async function main() {
             proxyConfiguration: proxyConf,
             maxRequestRetries: 5,
             useSessionPool: true,
-            maxConcurrency: 5, // keep it low for stealth
+            maxConcurrency: 5,
             requestHandlerTimeoutSecs: 60,
             preNavigationHooks: [
                 async (crawlingContext, requestAsBrowserOptions) => {
@@ -376,19 +395,22 @@ async function main() {
                     log.debug(`Requesting ${crawlingContext.request.url} with stealth headers`);
                 },
             ],
-            requestHandler: async (ctx) => {
-                const { request, $, enqueueLinks } = ctx;
-                const { label, pageNo = 1 } = request.userData;
-                const crawlerLog = log.child({ url: request.url, label });
-
-                // Gentle delay for stealth
-                await Actor.delay(1000 + Math.random() * 2000);
-
-                const currentLabel =
-                    label ||
+            async requestHandler({ request, $, enqueueLinks, log: crawlerLog }) {
+                const label =
+                    request.userData?.label ||
                     (isDetailUrl(request.url) ? 'DETAIL' : 'LIST');
+                const pageNo = request.userData?.pageNo || 1;
 
-                if (currentLabel === 'LIST') {
+                // Human-like delay: 1–3 seconds (NO Actor.delay here)
+                const delay = 1000 + Math.random() * 2000;
+                await new Promise((res) => setTimeout(res, delay));
+
+                crawlerLog.info(
+                    `Processing ${label} page: ${request.url}` +
+                        (label === 'LIST' ? ` (page ${pageNo})` : ''),
+                );
+
+                if (label === 'LIST') {
                     try {
                         const links = findJobLinks($, request.url);
                         crawlerLog.info(`LIST ${request.url} -> found ${links.length} job links`);
@@ -417,7 +439,9 @@ async function main() {
                                 );
                                 toPush.forEach((u) => seenUrls.add(u));
                                 saved += toPush.length;
-                                crawlerLog.info(`Saved ${toPush.length} job URLs, total saved: ${saved}`);
+                                crawlerLog.info(
+                                    `Saved ${toPush.length} job URLs, total saved: ${saved}`,
+                                );
                             }
                         }
 
@@ -433,24 +457,33 @@ async function main() {
                                 crawlerLog.info('No next page found');
                             }
                         }
-                    } catch (err) {
-                        crawlerLog.error(`LIST ${request.url} failed: ${err.message}`);
+                    } catch (error) {
+                        crawlerLog.error(
+                            `Error processing LIST page ${request.url}: ${error.message}`,
+                        );
                     }
-                } else if (currentLabel === 'DETAIL') {
+                    return;
+                }
+
+                if (label === 'DETAIL') {
+                    if (saved >= RESULTS_WANTED) {
+                        crawlerLog.info('Reached results limit, skipping detail page');
+                        return;
+                    }
+
                     try {
-                        // RELAXED PAGE VALIDATION: we no longer require a <table> (Daijob changed layout)
+                        // RELAXED: no longer require a <table> (new layout)
                         if (!$('h1, h2, h3, h4').length) {
                             crawlerLog.warn(
-                                `Page ${request.url} does not appear to be a valid job detail page (no headings found)`,
+                                `Page ${request.url} does not appear to be a valid job detail page (no headings)`,
                             );
                             return;
                         }
 
-                        // 1) Try JSON-LD first
                         const json = extractFromJsonLd($);
                         const data = json ? { ...json } : {};
 
-                        // --- title ---
+                        // Title
                         if (!data.title) {
                             data.title = $('h1, h2, h3, h4')
                                 .first()
@@ -458,9 +491,8 @@ async function main() {
                                 .trim() || null;
                         }
 
-                        // --- company name ---
+                        // Company (new layout)
                         if (!data.company) {
-                            // New layout: "Company Name" label then heading
                             const labelNode = findLabelNode($, 'Company Name');
                             if (labelNode && labelNode.length) {
                                 const next = labelNode
@@ -473,55 +505,52 @@ async function main() {
                             }
                         }
 
-                        // --- description_html & text ---
+                        // Description
                         if (!data.description_html) {
-                            // New layout: "Job Description" followed by free text and bullet points
                             const descHtml = extractDescriptionFromLayout($);
-                            if (descHtml) {
-                                data.description_html = descHtml;
-                            }
+                            if (descHtml) data.description_html = descHtml;
                         }
                         data.description_text = data.description_html
                             ? cleanText(data.description_html)
                             : null;
 
-                        // --- location ---
+                        // Location
                         if (!data.location) {
                             const loc = extractLocationFromLayout($);
                             if (loc) data.location = loc;
                         }
 
-                        // --- salary ---
+                        // Salary
                         if (!data.salary) {
                             const salary = extractSalaryFromLayout($);
                             if (salary) data.salary = salary;
                         }
 
-                        // --- job_type ---
+                        // Job type
                         if (!data.job_type) {
                             const jt = extractJobTypeFromLayout($);
                             if (jt) data.job_type = jt;
                         }
 
-                        // --- industry ---
+                        // Industry
                         if (!data.industry) {
                             const ind = extractIndustryFromLayout($);
                             if (ind) data.industry = ind;
                         }
 
-                        // --- working hours ---
+                        // Working hours
                         if (!data.working_hours) {
                             const wh = extractWorkingHoursFromLayout($);
                             if (wh) data.working_hours = wh;
                         }
 
-                        // --- chinese level ---
+                        // Chinese level
                         if (!data.chinese_level) {
                             const cl = extractChineseLevelFromLayout($);
                             if (cl) data.chinese_level = cl;
                         }
 
-                        // --- company info ---
+                        // Company info
                         if (!data.company_info_html && !data.company_info) {
                             const ciHtml = extractCompanyInfoFromLayout($);
                             if (ciHtml) {
@@ -530,6 +559,70 @@ async function main() {
                             }
                         } else if (data.company_info_html && !data.company_info) {
                             data.company_info = cleanText(data.company_info_html);
+                        }
+
+                        // Fallback: old table layout for missing fields (backwards compatibility)
+                        const tableRows = $('table tr');
+                        if (tableRows.length) {
+                            const findRowVal = (labelText) => {
+                                const row = tableRows.filter((_, tr) => {
+                                    const first = cheerioLoad(tr)('td').first().text().trim().toLowerCase();
+                                    return first === labelText;
+                                });
+                                if (!row.length) return null;
+                                return row.find('td').last().html()?.trim() || null;
+                            };
+
+                            if (!data.company) {
+                                const companyHtml = findRowVal('company name');
+                                if (companyHtml) data.company = cleanText(companyHtml);
+                            }
+                            if (!data.description_html) {
+                                const dHtml = findRowVal('job description');
+                                if (dHtml) data.description_html = dHtml;
+                                data.description_text = data.description_html
+                                    ? cleanText(data.description_html)
+                                    : data.description_text;
+                            }
+                            if (!data.location) {
+                                const lHtml = findRowVal('location');
+                                if (lHtml) data.location = cleanText(lHtml);
+                            }
+                            if (!data.salary) {
+                                const sHtml = findRowVal('salary');
+                                if (sHtml) data.salary = cleanText(sHtml);
+                            }
+                            if (!data.job_type) {
+                                const jtHtml = findRowVal('job type');
+                                if (jtHtml) data.job_type = cleanText(jtHtml);
+                            }
+                            if (!data.industry) {
+                                const indHtml = findRowVal('industry');
+                                if (indHtml) data.industry = cleanText(indHtml);
+                            }
+                            if (!data.working_hours) {
+                                const whHtml = findRowVal('working hours');
+                                if (whHtml) data.working_hours = cleanText(whHtml);
+                            }
+                            if (!data.chinese_level) {
+                                const clHtml = findRowVal('chinese level');
+                                if (clHtml) data.chinese_level = cleanText(clHtml);
+                            }
+                            if (!data.company_info) {
+                                const ciHtml = findRowVal('company info');
+                                if (ciHtml) {
+                                    data.company_info_html = ciHtml;
+                                    data.company_info = cleanText(ciHtml);
+                                }
+                            }
+                        }
+
+                        // Validate core fields
+                        if (!data.title || !data.company) {
+                            crawlerLog.warn(
+                                `Incomplete job data on ${request.url}: title=${!!data.title}, company=${!!data.company}`,
+                            );
+                            return;
                         }
 
                         const item = {
@@ -561,38 +654,6 @@ async function main() {
                 }
             },
         });
-
-        // --- Build initial URLs (keep backwards-compatible) -------------
-        const initial = [];
-
-        const addUrl = (u) => {
-            if (!u) return;
-            if (Array.isArray(u)) {
-                u.forEach(addUrl);
-            } else if (typeof u === 'string' && u.trim()) {
-                initial.push(u.trim());
-            }
-        };
-
-        addUrl(startUrl);
-        addUrl(startUrls);
-        addUrl(url);
-
-        // If still empty, fall back to generic search results
-        if (!initial.length) {
-            const params = new URLSearchParams();
-            if (keyword) params.set('keywords', keyword);
-            // location/category are trickier; safest is to let user provide startUrls,
-            // but we include them in the query string anyway:
-            if (location) params.set('location', location);
-            if (category) params.set('category', category);
-
-            const searchUrl = params.toString()
-                ? `https://www.daijob.com/en/jobs/search_result?${params.toString()}`
-                : 'https://www.daijob.com/en/jobs/search_result';
-
-            initial.push(searchUrl);
-        }
 
         const initialRequests = initial.map((u) => ({
             url: u,
