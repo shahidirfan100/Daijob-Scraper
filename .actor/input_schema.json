@@ -1,13 +1,13 @@
 {
-  "title": "Remote.co Jobs Scraper",
-  "description": "Scrape remote jobs from Remote.co. Provide either keyword/location/category OR a Remote.co search URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
+  "title": "Daijob Scraper",
+  "description": "Scrape jobs from Daijob.com. Provide either keyword/location OR a Daijob search URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrl": {
       "title": "Start URL",
       "type": "string",
-      "description": "Start scraping from a specific Remote.co search URL. If provided, this will be used instead of Keyword/Location.",
+      "description": "Start scraping from a specific Daijob search URL. If provided, this will be used instead of Keyword/Location.",
       "editor": "textfield"
     },
     "keyword": {
@@ -20,13 +20,7 @@
     "location": {
       "title": "Location (if not using Start URL)",
       "type": "string",
-      "description": "Location (Remote.co mostly lists remote positions; leave empty for global results).",
-      "editor": "textfield"
-    },
-    "category": {
-      "title": "Category (optional)",
-      "type": "string",
-      "description": "Optional job category to filter by (as used on Remote.co).",
+      "description": "Location filter for Daijob search (e.g., 'Tokyo', 'Osaka').",
       "editor": "textfield"
     },
     "collectDetails": {
@@ -52,36 +46,24 @@
       "editor": "number",
       "default": 20
     },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Use Apify Proxy (datacenter recommended for Remote.co).",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
-      }
-    },
-    "cookies": {
-      "title": "Custom cookies (raw header)",
-      "type": "string",
-      "description": "Optional raw 'Cookie' header string. Can help bypass consent banners.",
-      "editor": "textfield"
-    },
-    "cookiesJson": {
-      "title": "Custom cookies (JSON)",
-      "type": "string",
-      "description": "Optional JSON-formatted cookies. Accepts an array (e.g., [{\"name\":\"a\",\"value\":\"1\"}]) or an object map (e.g., {\"a\":\"1\"}).",
-      "editor": "textarea"
-    },
     "dedupe": {
       "title": "Deduplicate results",
       "type": "boolean",
       "description": "Remove duplicate job URLs from results (in-memory deduplication).",
       "editor": "checkbox",
       "default": true
-  }
-}
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy (datacenter recommended for Daijob.com).",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    }
+  },
   "required": [],
-  "additionalProperties": false
+  "additionalProperties": true
 }
