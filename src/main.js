@@ -1,4 +1,4 @@
-// Daijob scraper - CheerioCrawler implementation (fixed & extended)
+// Daijob scraper - CheerioCrawler implementation (robust detail parsing)
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
@@ -41,7 +41,6 @@ async function main() {
             dedupe,
         });
 
-        // Helpers
         const toAbs = (href, base = 'https://www.daijob.com/en/') => {
             try {
                 return new URL(href, base).href;
@@ -50,9 +49,9 @@ async function main() {
             }
         };
 
-        const cleanText = (html) => {
-            if (!html) return null;
-            const $ = cheerioLoad(`<div>${html}</div>`);
+        const cleanText = (htmlOrText) => {
+            if (!htmlOrText) return null;
+            const $ = cheerioLoad(`<div>${htmlOrText}</div>`);
             $('script, style, noscript, iframe').remove();
             const txt = $.root().text().replace(/\s+/g, ' ').trim();
             return txt || null;
@@ -62,7 +61,7 @@ async function main() {
             const u = new URL('https://www.daijob.com/en/jobs/search_result');
             if (kw) u.searchParams.set('keyword', String(kw).trim());
             if (loc) u.searchParams.set('location', String(loc).trim());
-            // category support is unclear, so we leave it out
+            if (cat) u.searchParams.set('category', String(cat).trim());
             u.searchParams.set('page', '1');
             return u.href;
         };
@@ -83,7 +82,7 @@ async function main() {
         if (url) initial.push(url);
         if (!initial.length) initial.push(buildStartUrl(keyword, location, category));
 
-        log.info(`Built ${initial.length} initial URLs to scrape`);
+        log.info(`Built ${initial.length} initial URLs`);
 
         const proxyConf = proxyConfiguration
             ? await Actor.createProxyConfiguration({ ...proxyConfiguration })
@@ -92,7 +91,6 @@ async function main() {
         let saved = 0;
         const seenUrls = new Set();
 
-        // Header generator for stealth
         const headerGenerator = new HeaderGenerator({
             browsers: [
                 { name: 'chrome', minVersion: 120 },
@@ -103,7 +101,7 @@ async function main() {
             operatingSystems: ['windows', 'macos', 'linux'],
         });
 
-        // --- JSON-LD extraction (extended) -----------------
+        // --- JSON-LD extraction (JobPosting) -----------------
         function extractFromJsonLd($) {
             const scripts = $('script[type="application/ld+json"]');
             for (let i = 0; i < scripts.length; i++) {
@@ -112,6 +110,7 @@ async function main() {
                     if (!raw.trim()) continue;
                     const parsed = JSON.parse(raw);
                     const arr = Array.isArray(parsed) ? parsed : [parsed];
+
                     for (const e of arr) {
                         if (!e) continue;
                         const t = e['@type'] || e.type;
@@ -175,13 +174,13 @@ async function main() {
                         }
                     }
                 } catch {
-                    // ignore parse errors
+                    // ignore broken JSON-LD
                 }
             }
             return null;
         }
 
-        // --- New-layout helpers for labelled sections ---
+        // --- DOM helpers for labelled sections (fallback #1) ---
         function findLabelNode($, label) {
             const labelLc = label.toLowerCase();
             let found = null;
@@ -233,19 +232,6 @@ async function main() {
                 if (parts.length) return parts.join(' > ');
             }
             return node.text().replace(/^Location/i, '').trim() || null;
-        }
-
-        function extractSalaryFromLayout($) {
-            const node = findLabelNode($, 'Salary');
-            if (!node) return null;
-            let text = node.text().replace(/^Salary/i, '').trim();
-            const next = node.next();
-            if (next && next.length) {
-                const nextText = next.text().trim();
-                if (nextText) text += (text ? ' ' : '') + nextText;
-            }
-            text = text.replace(/\s+/g, ' ').trim();
-            return text || null;
         }
 
         function extractWorkingHoursFromLayout($) {
@@ -345,6 +331,49 @@ async function main() {
             return html || null;
         }
 
+        // --- TEXT-BASED parsing from full page text (fallback #2 – VERY ROBUST) ---
+        function fillFromText($, data) {
+            let full = $('body').text();
+            if (!full) return;
+            full = full.replace(/\s+/g, ' ').trim();
+
+            // Job Type ... Industry ...
+            if (!data.job_type) {
+                const m = full.match(/Job Type\s+(.+?)\s+Industry\b/i);
+                if (m && m[1]) data.job_type = m[1].trim();
+            }
+
+            // Industry ... Location ...
+            if (!data.industry) {
+                const m = full.match(/Industry\s+(.+?)\s+Location\b/i);
+                if (m && m[1]) data.industry = m[1].trim();
+            }
+
+            // Location ... Job Description ...
+            if (!data.location) {
+                const m = full.match(/Location\s+(.+?)\s+Job Description\b/i);
+                if (m && m[1]) data.location = m[1].trim();
+            }
+
+            // Company Info ... Working Hours ...
+            if (!data.company_info && !data.company_info_html) {
+                const m = full.match(/Company Info\s+(.+?)\s+Working Hours\b/i);
+                if (m && m[1]) {
+                    const txt = m[1].trim();
+                    data.company_info = txt;
+                    data.company_info_html = `<p>${txt}</p>`;
+                }
+            }
+
+            // Chinese Level (only when present)
+            if (!data.chinese_level) {
+                const m = full.match(
+                    /Chinese Level\s+(.+?)\s+(Salary|Working Hours|Holidays|Japanese Level|English Level|Job Description|Company Info)\b/i,
+                );
+                if (m && m[1]) data.chinese_level = m[1].trim();
+            }
+        }
+
         // --- list page helpers ---
         function findJobLinks($, base) {
             const links = new Set();
@@ -360,7 +389,6 @@ async function main() {
         }
 
         function findNextPage($, base, currentPage) {
-            // Try a "Next" text link first
             let nextHref = $('a')
                 .filter((_, el) => $(el).text().trim().toLowerCase() === 'next')
                 .first()
@@ -401,7 +429,7 @@ async function main() {
                     (isDetailUrl(request.url) ? 'DETAIL' : 'LIST');
                 const pageNo = request.userData?.pageNo || 1;
 
-                // Human-like delay: 1–3 seconds (NO Actor.delay here)
+                // Stealth delay (no Actor.delay to avoid your previous error)
                 const delay = 1000 + Math.random() * 2000;
                 await new Promise((res) => setTimeout(res, delay));
 
@@ -465,192 +493,177 @@ async function main() {
                     return;
                 }
 
-                if (label === 'DETAIL') {
-                    if (saved >= RESULTS_WANTED) {
-                        crawlerLog.info('Reached results limit, skipping detail page');
+                // DETAIL
+                if (saved >= RESULTS_WANTED) {
+                    crawlerLog.info('Reached results limit, skipping detail page');
+                    return;
+                }
+
+                try {
+                    // Relaxed validation: any heading is enough
+                    if (!$('h1, h2, h3, h4').length) {
+                        crawlerLog.warn(
+                            `Page ${request.url} does not look like a job detail (no headings)`,
+                        );
                         return;
                     }
 
-                    try {
-                        // RELAXED: no longer require a <table> (new layout)
-                        if (!$('h1, h2, h3, h4').length) {
-                            crawlerLog.warn(
-                                `Page ${request.url} does not appear to be a valid job detail page (no headings)`,
-                            );
-                            return;
+                    const json = extractFromJsonLd($);
+                    const data = json ? { ...json } : {};
+
+                    // Title
+                    if (!data.title) {
+                        data.title = $('h1, h2, h3, h4')
+                            .first()
+                            .text()
+                            .trim() || null;
+                    }
+
+                    // Company (new layout)
+                    if (!data.company) {
+                        const labelNode = findLabelNode($, 'Company Name');
+                        if (labelNode && labelNode.length) {
+                            const next = labelNode
+                                .nextAll()
+                                .filter((_, el) => $(el).text().trim())
+                                .first();
+                            if (next.length) data.company = next.text().trim();
                         }
+                    }
 
-                        const json = extractFromJsonLd($);
-                        const data = json ? { ...json } : {};
+                    // Description
+                    if (!data.description_html) {
+                        const descHtml = extractDescriptionFromLayout($);
+                        if (descHtml) data.description_html = descHtml;
+                    }
+                    data.description_text = data.description_html
+                        ? cleanText(data.description_html)
+                        : null;
 
-                        // Title
-                        if (!data.title) {
-                            data.title = $('h1, h2, h3, h4')
-                                .first()
-                                .text()
-                                .trim() || null;
+                    // Location / salary / job_type / industry / working_hours / chinese_level / company_info
+                    if (!data.location) {
+                        const loc = extractLocationFromLayout($);
+                        if (loc) data.location = loc;
+                    }
+                    if (!data.job_type) {
+                        const jt = extractJobTypeFromLayout($);
+                        if (jt) data.job_type = jt;
+                    }
+                    if (!data.industry) {
+                        const ind = extractIndustryFromLayout($);
+                        if (ind) data.industry = ind;
+                    }
+                    if (!data.working_hours) {
+                        const wh = extractWorkingHoursFromLayout($);
+                        if (wh) data.working_hours = wh;
+                    }
+                    if (!data.chinese_level) {
+                        const cl = extractChineseLevelFromLayout($);
+                        if (cl) data.chinese_level = cl;
+                    }
+                    if (!data.company_info_html && !data.company_info) {
+                        const ciHtml = extractCompanyInfoFromLayout($);
+                        if (ciHtml) {
+                            data.company_info_html = ciHtml;
+                            data.company_info = cleanText(ciHtml);
                         }
+                    } else if (data.company_info_html && !data.company_info) {
+                        data.company_info = cleanText(data.company_info_html);
+                    }
 
-                        // Company (new layout)
+                    // --- SUPER-ROBUST text parsing ---
+                    fillFromText($, data);
+
+                    // --- Old table layout fallback (for legacy jobs) ---
+                    const tableRows = $('table tr');
+                    if (tableRows.length) {
+                        const findRowVal = (labelText) => {
+                            const row = tableRows.filter((_, tr) => {
+                                const $row = cheerioLoad(tr);
+                                const first = $row('td').first().text().trim().toLowerCase();
+                                return first === labelText;
+                            });
+                            if (!row.length) return null;
+                            return row.find('td').last().html()?.trim() || null;
+                        };
+
                         if (!data.company) {
-                            const labelNode = findLabelNode($, 'Company Name');
-                            if (labelNode && labelNode.length) {
-                                const next = labelNode
-                                    .nextAll()
-                                    .filter((_, el) => $(el).text().trim())
-                                    .first();
-                                if (next.length) {
-                                    data.company = next.text().trim();
-                                }
-                            }
+                            const companyHtml = findRowVal('company name');
+                            if (companyHtml) data.company = cleanText(companyHtml);
                         }
-
-                        // Description
                         if (!data.description_html) {
-                            const descHtml = extractDescriptionFromLayout($);
-                            if (descHtml) data.description_html = descHtml;
+                            const dHtml = findRowVal('job description');
+                            if (dHtml) data.description_html = dHtml;
+                            data.description_text = data.description_html
+                                ? cleanText(data.description_html)
+                                : data.description_text;
                         }
-                        data.description_text = data.description_html
-                            ? cleanText(data.description_html)
-                            : null;
-
-                        // Location
                         if (!data.location) {
-                            const loc = extractLocationFromLayout($);
-                            if (loc) data.location = loc;
+                            const lHtml = findRowVal('location');
+                            if (lHtml) data.location = cleanText(lHtml);
                         }
-
-                        // Salary
                         if (!data.salary) {
-                            const salary = extractSalaryFromLayout($);
-                            if (salary) data.salary = salary;
+                            const sHtml = findRowVal('salary');
+                            if (sHtml) data.salary = cleanText(sHtml);
                         }
-
-                        // Job type
                         if (!data.job_type) {
-                            const jt = extractJobTypeFromLayout($);
-                            if (jt) data.job_type = jt;
+                            const jtHtml = findRowVal('job type');
+                            if (jtHtml) data.job_type = cleanText(jtHtml);
                         }
-
-                        // Industry
                         if (!data.industry) {
-                            const ind = extractIndustryFromLayout($);
-                            if (ind) data.industry = ind;
+                            const indHtml = findRowVal('industry');
+                            if (indHtml) data.industry = cleanText(indHtml);
                         }
-
-                        // Working hours
                         if (!data.working_hours) {
-                            const wh = extractWorkingHoursFromLayout($);
-                            if (wh) data.working_hours = wh;
+                            const whHtml = findRowVal('working hours');
+                            if (whHtml) data.working_hours = cleanText(whHtml);
                         }
-
-                        // Chinese level
                         if (!data.chinese_level) {
-                            const cl = extractChineseLevelFromLayout($);
-                            if (cl) data.chinese_level = cl;
+                            const clHtml = findRowVal('chinese level');
+                            if (clHtml) data.chinese_level = cleanText(clHtml);
                         }
-
-                        // Company info
-                        if (!data.company_info_html && !data.company_info) {
-                            const ciHtml = extractCompanyInfoFromLayout($);
+                        if (!data.company_info) {
+                            const ciHtml = findRowVal('company info');
                             if (ciHtml) {
                                 data.company_info_html = ciHtml;
                                 data.company_info = cleanText(ciHtml);
                             }
-                        } else if (data.company_info_html && !data.company_info) {
-                            data.company_info = cleanText(data.company_info_html);
                         }
-
-                        // Fallback: old table layout for missing fields (backwards compatibility)
-                        const tableRows = $('table tr');
-                        if (tableRows.length) {
-                            const findRowVal = (labelText) => {
-                                const row = tableRows.filter((_, tr) => {
-                                    const first = cheerioLoad(tr)('td').first().text().trim().toLowerCase();
-                                    return first === labelText;
-                                });
-                                if (!row.length) return null;
-                                return row.find('td').last().html()?.trim() || null;
-                            };
-
-                            if (!data.company) {
-                                const companyHtml = findRowVal('company name');
-                                if (companyHtml) data.company = cleanText(companyHtml);
-                            }
-                            if (!data.description_html) {
-                                const dHtml = findRowVal('job description');
-                                if (dHtml) data.description_html = dHtml;
-                                data.description_text = data.description_html
-                                    ? cleanText(data.description_html)
-                                    : data.description_text;
-                            }
-                            if (!data.location) {
-                                const lHtml = findRowVal('location');
-                                if (lHtml) data.location = cleanText(lHtml);
-                            }
-                            if (!data.salary) {
-                                const sHtml = findRowVal('salary');
-                                if (sHtml) data.salary = cleanText(sHtml);
-                            }
-                            if (!data.job_type) {
-                                const jtHtml = findRowVal('job type');
-                                if (jtHtml) data.job_type = cleanText(jtHtml);
-                            }
-                            if (!data.industry) {
-                                const indHtml = findRowVal('industry');
-                                if (indHtml) data.industry = cleanText(indHtml);
-                            }
-                            if (!data.working_hours) {
-                                const whHtml = findRowVal('working hours');
-                                if (whHtml) data.working_hours = cleanText(whHtml);
-                            }
-                            if (!data.chinese_level) {
-                                const clHtml = findRowVal('chinese level');
-                                if (clHtml) data.chinese_level = cleanText(clHtml);
-                            }
-                            if (!data.company_info) {
-                                const ciHtml = findRowVal('company info');
-                                if (ciHtml) {
-                                    data.company_info_html = ciHtml;
-                                    data.company_info = cleanText(ciHtml);
-                                }
-                            }
-                        }
-
-                        // Validate core fields
-                        if (!data.title || !data.company) {
-                            crawlerLog.warn(
-                                `Incomplete job data on ${request.url}: title=${!!data.title}, company=${!!data.company}`,
-                            );
-                            return;
-                        }
-
-                        const item = {
-                            title: data.title || null,
-                            company: data.company || null,
-                            location: data.location || null,
-                            salary: data.salary || null,
-                            job_type: data.job_type || null,
-                            industry: data.industry || null,
-                            working_hours: data.working_hours || null,
-                            chinese_level: data.chinese_level || null,
-                            company_info: data.company_info || null,
-                            date_posted: data.date_posted || null,
-                            description_html: data.description_html || null,
-                            description_text: data.description_text || null,
-                            url: request.url,
-                        };
-
-                        await Dataset.pushData(item);
-                        saved++;
-                        crawlerLog.info(
-                            `Saved job: ${item.title || 'N/A'} at ${
-                                item.company || 'N/A'
-                            }, total saved: ${saved}`,
-                        );
-                    } catch (err) {
-                        crawlerLog.error(`DETAIL ${request.url} failed: ${err.message}`);
                     }
+
+                    // Validate core fields
+                    if (!data.title || !data.company) {
+                        crawlerLog.warn(
+                            `Incomplete job data on ${request.url}: title=${!!data.title}, company=${!!data.company}`,
+                        );
+                        return;
+                    }
+
+                    const item = {
+                        title: data.title || null,
+                        company: data.company || null,
+                        location: data.location || null,
+                        salary: data.salary || null,
+                        job_type: data.job_type || null,
+                        industry: data.industry || null,
+                        working_hours: data.working_hours || null,
+                        chinese_level: data.chinese_level || null,
+                        company_info: data.company_info || null,
+                        date_posted: data.date_posted || null,
+                        description_html: data.description_html || null,
+                        description_text: data.description_text || null,
+                        url: request.url,
+                    };
+
+                    await Dataset.pushData(item);
+                    saved++;
+                    crawlerLog.info(
+                        `Saved job: ${item.title || 'N/A'} at ${
+                            item.company || 'N/A'
+                        }, total saved: ${saved}`,
+                    );
+                } catch (err) {
+                    crawlerLog.error(`DETAIL ${request.url} failed: ${err.message}`);
                 }
             },
         });
