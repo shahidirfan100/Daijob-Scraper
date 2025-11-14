@@ -288,7 +288,7 @@ async function main() {
                 const txtLc = cur.text().trim().toLowerCase();
                 if (!txtLc) continue;
                 if (stopMarkers.some((m) => txtLc.startsWith(m))) break;
-                html += $.html(cur);
+                html += cheerioLoad('<div>').html(cur).html();
             }
             return html || null;
         }
@@ -326,7 +326,7 @@ async function main() {
                 const txtLc = cur.text().trim().toLowerCase();
                 if (!txtLc) continue;
                 if (stopMarkers.some((m) => txtLc.startsWith(m))) break;
-                html += $.html(cur);
+                html += cheerioLoad('<div>').html(cur).html();
             }
             return html || null;
         }
@@ -405,11 +405,16 @@ async function main() {
             return toAbs(nextHref, base);
         }
 
+        // --- FAST & STEALTHY CONCURRENCY ---
+        const desiredConcurrency = Number.isFinite(+input.maxConcurrency)
+            ? Math.max(1, +input.maxConcurrency)
+            : 15; // 👈 default 15 for stealth
+
+        log.info(`Using maxConcurrency = ${desiredConcurrency}`);
+
         const crawler = new CheerioCrawler({
             proxyConfiguration: proxyConf,
-            // 🚀 Faster: let Crawlee go wide (tune this up/down as needed)
-            maxConcurrency: 15,            // previously 5
-            maxRequestRetries: 3,          // fewer retries for speed
+            maxRequestRetries: 5,
             useSessionPool: true,
             sessionPoolOptions: {
                 maxPoolSize: 30,
@@ -417,7 +422,8 @@ async function main() {
                     maxUsageCount: 50,
                 },
             },
-            requestHandlerTimeoutSecs: 45,
+            maxConcurrency: desiredConcurrency,
+            requestHandlerTimeoutSecs: 60,
             preNavigationHooks: [
                 async (crawlingContext, requestAsBrowserOptions) => {
                     const headers = headerGenerator.getHeaders();
@@ -436,7 +442,7 @@ async function main() {
                     (isDetailUrl(request.url) ? 'DETAIL' : 'LIST');
                 const pageNo = request.userData?.pageNo || 1;
 
-                // ⚡ Only micro-delay on DETAIL pages for stealth
+                // Micro-delay only on DETAIL pages for stealth
                 if (label === 'DETAIL') {
                     const delay = 200 + Math.random() * 400; // 0.2–0.6s
                     await new Promise((res) => setTimeout(res, delay));
