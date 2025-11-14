@@ -1,4 +1,4 @@
-// Daijob scraper - CheerioCrawler implementation (robust detail parsing)
+// Daijob scraper - CheerioCrawler implementation (fast + stealthy)
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
@@ -331,7 +331,7 @@ async function main() {
             return html || null;
         }
 
-        // --- TEXT-BASED parsing from full page text (fallback #2 – VERY ROBUST) ---
+        // --- TEXT-BASED parsing from full page text (fallback #2 – ROBUST) ---
         function fillFromText($, data) {
             let full = $('body').text();
             if (!full) return;
@@ -407,10 +407,17 @@ async function main() {
 
         const crawler = new CheerioCrawler({
             proxyConfiguration: proxyConf,
-            maxRequestRetries: 5,
+            // 🚀 Faster: let Crawlee go wide (tune this up/down as needed)
+            maxConcurrency: 15,            // previously 5
+            maxRequestRetries: 3,          // fewer retries for speed
             useSessionPool: true,
-            maxConcurrency: 5,
-            requestHandlerTimeoutSecs: 60,
+            sessionPoolOptions: {
+                maxPoolSize: 30,
+                sessionOptions: {
+                    maxUsageCount: 50,
+                },
+            },
+            requestHandlerTimeoutSecs: 45,
             preNavigationHooks: [
                 async (crawlingContext, requestAsBrowserOptions) => {
                     const headers = headerGenerator.getHeaders();
@@ -429,9 +436,11 @@ async function main() {
                     (isDetailUrl(request.url) ? 'DETAIL' : 'LIST');
                 const pageNo = request.userData?.pageNo || 1;
 
-                // Stealth delay (no Actor.delay to avoid your previous error)
-                const delay = 1000 + Math.random() * 2000;
-                await new Promise((res) => setTimeout(res, delay));
+                // ⚡ Only micro-delay on DETAIL pages for stealth
+                if (label === 'DETAIL') {
+                    const delay = 200 + Math.random() * 400; // 0.2–0.6s
+                    await new Promise((res) => setTimeout(res, delay));
+                }
 
                 crawlerLog.info(
                     `Processing ${label} page: ${request.url}` +
@@ -579,8 +588,12 @@ async function main() {
                     if (tableRows.length) {
                         const findRowVal = (labelText) => {
                             const row = tableRows.filter((_, tr) => {
-                                const $row = cheerioLoad(tr);
-                                const first = $row('td').first().text().trim().toLowerCase();
+                                const first = $(tr)
+                                    .find('td')
+                                    .first()
+                                    .text()
+                                    .trim()
+                                    .toLowerCase();
                                 return first === labelText;
                             });
                             if (!row.length) return null;
